@@ -286,9 +286,9 @@ if __name__ == '__main__':
         pose_3d_coco_first_driving_frame = pose_3d_coco_first_driving_frame[valid_indices]
         
         if len(valid_lower_indices) >= 4:
-            new_camera_intrinsics, scale_m = solve_new_camera_params_down(pose_3d_coco_first_driving_frame, ori_focal, [target_H, target_W], pose_2d_ref)
+            new_camera_intrinsics, scale_m, scale_s = solve_new_camera_params_down(pose_3d_coco_first_driving_frame, ori_focal, [target_H, target_W], pose_2d_ref)
         else:
-            new_camera_intrinsics, scale_m = solve_new_camera_params_central(pose_3d_coco_first_driving_frame, ori_focal, [target_H, target_W], pose_2d_ref)
+            new_camera_intrinsics, scale_m, scale_s = solve_new_camera_params_central(pose_3d_coco_first_driving_frame, ori_focal, [target_H, target_W], pose_2d_ref)
         
         # m 代表缩放了多少
         scale_face = scale_faces(list(poses), list(poses_ref))   # poses[0]['faces'].shape: 1, 68, 2  , poses_ref[0]['faces'].shape: 1, 68, 2
@@ -297,7 +297,7 @@ if __name__ == '__main__':
 
         nlf_results = recollect_nlf(nlf_results)
         poses = recollect_dwposes(list(poses))
-        shift_dwpose_according_to_nlf(collect_smpl_poses(nlf_results), poses, ori_camera_pose, new_camera_intrinsics, target_H, target_W)
+        shift_dwpose_according_to_nlf(collect_smpl_poses(nlf_results), poses, ori_camera_pose, new_camera_intrinsics, target_H, target_W, scale_x=scale_m, scale_y=scale_m*scale_s)
         
         print("Rendering final video...")
         frames_np = render_nlf_as_images(nlf_results, poses, reshape_pool=None, intrinsic_matrix=new_camera_intrinsics)
