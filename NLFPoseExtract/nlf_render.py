@@ -21,8 +21,10 @@ def p3d_single_p2d(points, intrinsic_matrix):
     v_np = v.cpu().numpy()
     return np.array([u_np, v_np])
 
+def scale_around_center(points, center, dim, scale=1.0):
+    return (points[:, dim] - center[dim]) * scale + center[dim]
 
-def shift_dwpose_according_to_nlf(smpl_poses, aligned_poses, ori_intrinstics, modified_intrinstics, height, width):
+def shift_dwpose_according_to_nlf(smpl_poses, aligned_poses, ori_intrinstics, modified_intrinstics, height, width, scale_x = 1.0, scale_y = 1.0):
     ########## warning: 会改变body； shift 之后 body是不准的 ##########
     for i in range(len(smpl_poses)):
         persons_joints_list = smpl_poses[i]
@@ -47,6 +49,11 @@ def shift_dwpose_according_to_nlf(smpl_poses, aligned_poses, ori_intrinstics, mo
             candidate[:, 0] += person_joint_15_2d_shift[0] / width
             candidate[:, 1] += person_joint_15_2d_shift[1] / height
 
+            scales = [scale_x, scale_y]
+            # apply camera scale around wrist (hand[0]). 
+            for dim in [0,1]:
+                right_hand[:, dim] = scale_around_center(right_hand, right_hand[0, :], dim=dim, scale=scales[dim])
+                left_hand[:, dim] = scale_around_center(left_hand, left_hand[0, :], dim=dim, scale=scales[dim])
 
 def get_single_pose_cylinder_specs(args):
     """渲染单个pose的辅助函数，用于并行处理"""
