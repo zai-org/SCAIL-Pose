@@ -8,9 +8,8 @@
 </div>
 
 
-This repository works as a submodule of the 3D pose extraction & rendering code for **SCAIL (Studio-Grade Character Animation via
-In-Context Learning)**, a framework that enables high-fidelity character animation under diverse and challenging
-conditions, including large motion variations, stylized characters, and multi-character interactions. The main repository is at [zai-org/SCAIL](https://github.com/zai-org/SCAIL) and please follow instructions in that repo to extract and render the pose.
+This repository works as a submodule of [**SCAIL**](https://github.com/zai-org/SCAIL) (Studio-Grade Character Animation via In-Context Learning), a framework that enables high-fidelity character animation under diverse and challenging
+conditions, including large motion variations, stylized characters, and multi-character interactions. Please follow instructions in that repo to extract and render the pose.
 <p align="center">
   <img src="resources/pose_teaser.png" alt="teaser" width="90%">
 </p>
