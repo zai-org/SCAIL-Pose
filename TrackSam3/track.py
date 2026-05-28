@@ -200,7 +200,8 @@ def _reorder_and_color(valid_track_ids_ordered, mask_arrays, sort_by, fixed_colo
 
 
 def get_mask_from_video(video_path, predictor, max_targets=DEFAULT_MAX_TARGETS,
-                        sort_by='area', fixed_colors=None):
+                        sort_by='area', fixed_colors=None,
+                        text=("human", "character")):
     """Run SAM3 tracking on a video file and return per-person binary masks and colors.
 
     Args:
@@ -228,7 +229,7 @@ def get_mask_from_video(video_path, predictor, max_targets=DEFAULT_MAX_TARGETS,
     height, width = vr[0].asnumpy().shape[:2]
     del vr
 
-    results = predictor(source=video_path, text=["human", "character"], stream=True)
+    results = predictor(source=video_path, text=list(text), stream=True)
     ret = visualize_and_save_mask(
         results, width, height, predictor,
         new_indices=np.arange(full_length), full_length=full_length,
@@ -242,7 +243,8 @@ def get_mask_from_video(video_path, predictor, max_targets=DEFAULT_MAX_TARGETS,
 
 
 def get_mask_from_image(image_path, predictor, max_targets=DEFAULT_MAX_TARGETS,
-                        sort_by='x', fixed_colors=None):
+                        sort_by='x', fixed_colors=None,
+                        text=("human", "character")):
     """Run SAM3SemanticPredictor (image variant) on a single image.
 
     Args:
@@ -258,7 +260,7 @@ def get_mask_from_image(image_path, predictor, max_targets=DEFAULT_MAX_TARGETS,
         colors: list of BGR color tuples corresponding to each person.
     """
     image_path = str(image_path)
-    results = predictor(source=image_path, text=["human", "character"])
+    results = predictor(source=image_path, text=list(text))
     if not results:
         return [], []
     result = results[0]

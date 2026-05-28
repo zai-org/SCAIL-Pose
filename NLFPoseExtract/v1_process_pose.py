@@ -309,6 +309,5 @@ if __name__ == '__main__':
 
     mpy.ImageSequenceClip(frames_np, fps=16).write_videofile(out_path_aligned)
     print(f"Done! Output saved to: {out_path_aligned}")
-·
         
 

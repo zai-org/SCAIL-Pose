@@ -145,7 +145,7 @@ if __name__ == '__main__':
                           'Models load once and every subdir is processed in one invocation. '
                           'Mutually exclusive with --subdir.')
     parser.add_argument('--video_name', type=str, default='driving.mp4',
-                        choices=['driving.mp4', 'GT.mp4'],
+                        choices=['driving.mp4', 'GT.mp4', 'raw.mp4'],
                         help='Filename of the driving video inside each subdir.')
     parser.add_argument('--e2e_mode', action='store_true',
                         help='If set, skip pose extraction: rendered_v2.mp4 is a copy of the driving video, '
