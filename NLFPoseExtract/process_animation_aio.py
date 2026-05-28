@@ -62,7 +62,7 @@ def write_colored_mask_video(masks, colors, out_path, fps):
 
 def process_one(subdir, video_name, e2e_mode, max_persons,
                 model_nlf, detector, predictor, image_predictor):
-    from TrackSam3.track import get_mask_from_image, get_mask_from_video
+    from TrackSam3.track import get_mask_from_image_via_video, get_mask_from_video
 
     mp4_path = os.path.join(subdir, video_name)
     if not os.path.exists(mp4_path):
@@ -86,9 +86,11 @@ def process_one(subdir, video_name, e2e_mode, max_persons,
     print(f"Driving defines {N} person(s) (capped at --max_persons={max_persons}); colors={drv_colors}")
 
     # 2) Ref provides per-person colors; cap at N and sort left-to-right to match driving.
+    # Route ref through the video predictor (single-frame mp4 wrapper) — image-mode SAM3
+    # often misses small / distant subjects that the video pipeline picks up reliably.
     print(f"Getting ref masks from {ref_image_path}...")
-    ref_masks, ref_colors = get_mask_from_image(
-        ref_image_path, image_predictor, max_targets=N, sort_by='x', fixed_colors=None,
+    ref_masks, ref_colors = get_mask_from_image_via_video(
+        ref_image_path, predictor, max_targets=N, sort_by='x', fixed_colors=None,
     )
     if len(ref_masks) < N:
         raise RuntimeError(

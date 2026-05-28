@@ -242,6 +242,49 @@ def get_mask_from_video(video_path, predictor, max_targets=DEFAULT_MAX_TARGETS,
     return _reorder_and_color(valid_track_ids_ordered, mask_arrays, sort_by, fixed_colors)
 
 
+def get_mask_from_image_via_video(image_path, video_predictor, max_targets=DEFAULT_MAX_TARGETS,
+                                  sort_by='x', fixed_colors=None,
+                                  text=("human", "character"), n_repeat=4, fps=8):
+    """Detect persons in a still image by wrapping it as a tiny mp4 and routing through
+    SAM3VideoSemanticPredictor. Workaround for image-mode SAM3 missing small / distant
+    subjects that the video pipeline picks up reliably.
+
+    Returns (masks, colors) with each mask shaped (1, H, W) bool — only the first frame
+    of the synthetic clip is kept.
+    """
+    import tempfile
+    image_path = str(image_path)
+    img = cv2.imread(image_path)
+    if img is None:
+        raise FileNotFoundError(f"Cannot read image: {image_path}")
+    H, W = img.shape[:2]
+
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix='.mp4')
+    os.close(tmp_fd)
+    try:
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        vw = cv2.VideoWriter(tmp_path, fourcc, float(fps), (W, H))
+        if not vw.isOpened():
+            raise RuntimeError(f"cv2.VideoWriter failed to open {tmp_path}")
+        for _ in range(n_repeat):
+            vw.write(img)
+        vw.release()
+
+        masks, colors = get_mask_from_video(
+            tmp_path, video_predictor,
+            max_targets=max_targets, sort_by=sort_by,
+            fixed_colors=fixed_colors, text=text,
+        )
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    masks = [m[:1] for m in masks]
+    return masks, colors
+
+
 def get_mask_from_image(image_path, predictor, max_targets=DEFAULT_MAX_TARGETS,
                         sort_by='x', fixed_colors=None,
                         text=("human", "character")):

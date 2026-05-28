@@ -355,7 +355,8 @@ def render_nlf_as_images(data, poses, reshape_pool=None, intrinsic_matrix=None, 
             # 在 mono 版上用每人的颜色画 cheek/hand/face 2D 关键点
             if frames_np_rgba_mono is not None and person_colors is not None:
                 poses_list = aligned_poses[i]
-                for p_idx in range(len(poses_list['bodies']['candidate'])):
+                n_draw = min(len(poses_list['bodies']['candidate']), len(person_colors))
+                for p_idx in range(n_draw):
                     temp_canvas = np.zeros((height, width, 3), dtype=np.uint8)
                     p_candidate = poses_list['bodies']['candidate'][p_idx]
                     p_subset = poses_list['bodies']['subset'][p_idx:p_idx+1]
@@ -581,13 +582,49 @@ def run_nlf_from_masks(video_frames, masks, colors, model_nlf, nlf_render_path,
 
     poses = None
     if detector is not None:
-        detector_return_list = []
+        # Per-person DWpose: run detector on each SAM3 person's dark_green-bg crop so the
+        # 2D keypoints (face/hands/body) align with SAM3 person order. Stack the per-person
+        # single-person dicts back into multi-person dicts per frame, in SAM3 order.
+        N = len(masks)
+        EMPTY_BODY = np.full((24, 2), -1.0, dtype=np.float32)
+        EMPTY_SUBSET = np.full((24,), -1.0, dtype=np.float32)
+        EMPTY_FACE = np.full((68, 2), -1.0, dtype=np.float32)
+        EMPTY_HAND = np.full((21, 2), -1.0, dtype=np.float32)
+
+        per_person_per_frame = [[None] * T for _ in range(N)]
+        for p_idx in range(N):
+            person_frames_np = vr_frames_list[p_idx].numpy()  # (T, H, W, 3) RGB, dark_green bg
+            for t in range(T):
+                pose_dict, _, _ = detector(Image.fromarray(person_frames_np[t]))
+                per_person_per_frame[p_idx][t] = pose_dict
+
+        poses = []
         for t in range(T):
-            pil_frame = Image.fromarray(video_frames[t])
-            detector_result = detector(pil_frame)
-            detector_return_list.append(detector_result)
-        poses, _, _ = zip(*detector_return_list)
-        poses = list(poses)
+            cand_rows, sub_rows, face_rows = [], [], []
+            hand_rows = []
+            for p_idx in range(N):
+                pd = per_person_per_frame[p_idx][t]
+                cands = pd['bodies']['candidate']
+                if cands is not None and len(cands) > 0:
+                    cand_rows.append(cands[0])
+                    sub_rows.append(pd['bodies']['subset'][0])
+                    face_rows.append(pd['faces'][0])
+                    hand_rows.append(pd['hands'][0])
+                    hand_rows.append(pd['hands'][1])
+                else:
+                    cand_rows.append(EMPTY_BODY)
+                    sub_rows.append(EMPTY_SUBSET)
+                    face_rows.append(EMPTY_FACE)
+                    hand_rows.append(EMPTY_HAND)
+                    hand_rows.append(EMPTY_HAND)
+            poses.append({
+                'bodies': {
+                    'candidate': np.stack(cand_rows, axis=0),
+                    'subset':    np.stack(sub_rows, axis=0),
+                },
+                'faces': np.stack(face_rows, axis=0),
+                'hands': np.stack(hand_rows, axis=0),
+            })
 
     person_colors_rgba = []
     for rgb in colors:
@@ -596,8 +633,10 @@ def run_nlf_from_masks(video_frames, masks, colors, model_nlf, nlf_render_path,
 
     palette_offset = 1 if len(masks) == 1 else 0
     frames_regular, frames_mono = render_nlf_as_images(
-        nlf_results, poses=poses, reshape_pool=None, intrinsic_matrix=None,
-        draw_2d=True, person_colors=person_colors_rgba, palette_offset=palette_offset,
+        copy.deepcopy(nlf_results), poses=copy.deepcopy(poses),
+        reshape_pool=None, intrinsic_matrix=None,
+        draw_2d=True, aug_2d=False, aug_cam=False,
+        person_colors=person_colors_rgba, palette_offset=palette_offset,
     )
 
     for out_path in (nlf_render_path, nlf_render_mask_path):

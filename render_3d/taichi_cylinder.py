@@ -28,7 +28,7 @@ def flatten_specs(specs_list):
         np.array(frame_count, dtype=np.int32),
     )
 
-def render_whole(specs_list, H=480, W=640, fx=500, fy=500, cx=240, cy=320, radius=21.5):
+def render_whole(specs_list, H=480, W=640, fx=500, fy=500, cx=240, cy=320, radius=21.5, use_specular=True):
     img = ti.Vector.field(4, dtype=ti.f32, shape=(H, W))
     starts, ends, colors, frame_offset, frame_count = flatten_specs(specs_list)
     total_cyl = len(starts)
@@ -51,9 +51,11 @@ def render_whole(specs_list, H=480, W=640, fx=500, fy=500, cx=240, cy=320, radiu
     frame_id = ti.field(dtype=ti.i32, shape=())  # 当前帧号
     z_min_field = ti.field(dtype=ti.f32, shape=())
     z_max_field = ti.field(dtype=ti.f32, shape=())
+    use_spec_field = ti.field(dtype=ti.i32, shape=())
 
     z_min_field[None] = z_min
     z_max_field[None] = z_max
+    use_spec_field[None] = 1 if use_specular else 0
 
     # # ====== 拷贝数据一次 ======
     c_start.from_numpy(starts)
@@ -132,28 +134,29 @@ def render_whole(specs_list, H=480, W=640, fx=500, fy=500, cx=240, cy=320, radiu
                 #     col_out = ti.Vector([col.x * lit, col.y * lit, col.z * lit, col.w])
                 #     break
 
-                    n = get_normal(p)
-                    diff = max(n.dot(-light_dir), 0.0)
+                    if use_spec_field[None] == 1:
+                        n = get_normal(p)
+                        diff = max(n.dot(-light_dir), 0.0)
 
-                    # === Blinn-Phong 镜面反射 ===
-                    view_dir = -rd.normalized()
-                    half_dir = (view_dir + -light_dir).normalized()
-                    spec = max(n.dot(half_dir), 0.0) ** 32   # shininess=32，越小越散，越大越锐
+                        depth_factor = 1.0 - (p.z - depth_near) / (depth_far - znear)
+                        depth_factor = ti.max(0.0, ti.min(1.0, depth_factor))
 
-                    depth_factor = 1.0 - (p.z - depth_near) / (depth_far - znear)
-                    depth_factor = ti.max(0.0, ti.min(1.0, depth_factor))
+                        # diffuse/ambient 光照
+                        diffuse_term = 0.3 + 0.7 * diff
+                        base = col.xyz * diffuse_term * depth_factor
 
-                    # 原来的 diffuse/ambient 光照
-                    diffuse_term = 0.3 + 0.7 * diff
-                    base = col.xyz * diffuse_term * depth_factor
-
-                    # 镜面高光（叠加到原有结果上）
-                    highlight = ti.Vector([1.0, 1.0, 1.0]) * (0.5 * spec) * depth_factor
-
-                    col_out = ti.Vector([base.x + highlight.x,
-                                        base.y + highlight.y,
-                                        base.z + highlight.z,
-                                        col.w])
+                        # === Blinn-Phong 镜面反射 ===
+                        view_dir = -rd.normalized()
+                        half_dir = (view_dir + -light_dir).normalized()
+                        spec = max(n.dot(half_dir), 0.0) ** 32   # shininess=32，越小越散，越大越锐
+                        highlight = ti.Vector([1.0, 1.0, 1.0]) * (0.5 * spec) * depth_factor
+                        col_out = ti.Vector([base.x + highlight.x,
+                                            base.y + highlight.y,
+                                            base.z + highlight.z,
+                                            col.w])
+                    else:
+                        # mono：无光照，纯平色
+                        col_out = ti.Vector([col.x, col.y, col.z, col.w])
                     break
 
                 if t > zfar:
