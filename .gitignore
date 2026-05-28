@@ -11,3 +11,6 @@ render_3d/test_render_cylinder.png
 multi_test/
 preview_videos/
 sam2/
+egocentric/
+paper_draw/
+process_*.sh
