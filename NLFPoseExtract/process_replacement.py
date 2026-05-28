@@ -15,60 +15,16 @@ import traceback
 import cv2
 import numpy as np
 
-try:
-    import moviepy.editor as mpy
-except Exception:
-    import moviepy as mpy
-
-
-def find_ref_image(subdir):
-    for name in ('ref_image.jpg', 'ref_image.png', 'ref.jpg', 'ref.png'):
-        p = os.path.join(subdir, name)
-        if os.path.exists(p):
-            return p
-    raise FileNotFoundError(f"No reference image found in {subdir}")
-
-
-def save_colored_mask_image(masks, colors, out_path, bg_color=(0, 0, 0)):
-    """Black bg by default; mask regions filled with solid color."""
-    H, W = masks[0].shape[1:]
-    frame = np.full((H, W, 3), bg_color, dtype=np.uint8)
-    for mask_t, color in zip(masks, colors):
-        frame[mask_t[0]] = color
-    cv2.imwrite(out_path, frame)
-
-
-def save_real_pixel_mask_image(masks, frame_rgb, out_path):
-    """Black bg; mask regions show real pixels from frame_rgb (H,W,3 RGB)."""
-    H, W = masks[0].shape[1:]
-    canvas = np.zeros((H, W, 3), dtype=np.uint8)
-    frame_bgr = frame_rgb[:, :, ::-1]
-    for mask_t in masks:
-        canvas[mask_t[0]] = frame_bgr[mask_t[0]]
-    cv2.imwrite(out_path, canvas)
-
-
-def write_colored_mask_video(masks, colors, out_path, fps, bg_color=(255, 255, 255)):
-    T = masks[0].shape[0]
-    H, W = masks[0].shape[1:]
-    rgb_colors = [(int(c[2]), int(c[1]), int(c[0])) for c in colors]
-    bg_rgb = (int(bg_color[2]), int(bg_color[1]), int(bg_color[0]))
-
-    frames = []
-    for t in range(T):
-        frame = np.full((H, W, 3), bg_rgb, dtype=np.uint8)
-        for mask_t, rgb in zip(masks, rgb_colors):
-            frame[mask_t[t]] = rgb
-        frames.append(frame)
-
-    out_dir = os.path.dirname(out_path)
-    if out_dir:
-        os.makedirs(out_dir, exist_ok=True)
-    mpy.ImageSequenceClip(frames, fps=fps).write_videofile(out_path)
+from NLFPoseExtract.v2_helper import (
+    find_ref_image,
+    save_colored_mask_image,
+    save_real_pixel_mask_image,
+    write_colored_mask_video,
+)
 
 
 def _select_closest_to_ref(drv_masks, drv_colors, ref_masks):
-    """onetomany: among multiple driving tracks, pick the one whose first-frame
+    """matchnearest: among multiple driving tracks, pick the one whose first-frame
     mask has the highest IoU with the ref mask, after resizing ref to driving
     resolution. Returns ([selected_mask], [selected_color]).
     """
@@ -85,15 +41,27 @@ def _select_closest_to_ref(drv_masks, drv_colors, ref_masks):
         inter = int(np.logical_and(ref_resized, drv_first).sum())
         union = int(np.logical_or(ref_resized, drv_first).sum())
         iou = inter / max(union, 1)
-        print(f"  onetomany IoU track {i} (color={drv_colors[i]}): {iou:.4f}")
+        print(f"  matchnearest IoU track {i} (color={drv_colors[i]}): {iou:.4f}")
         if iou > best_iou:
             best_iou, best_idx = iou, i
 
-    print(f"  onetomany selected track {best_idx} (IoU={best_iou:.4f})")
+    print(f"  matchnearest selected track {best_idx} (IoU={best_iou:.4f})")
     return [drv_masks[best_idx]], [drv_colors[best_idx]]
 
 
-def process_one(subdir, video_name, test_mode, onetomany, predictor, image_predictor, text):
+def _union_masks(masks, colors):
+    """Combine N masks into one via logical OR; reuse the first track's color.
+    Used for egocentric mode where left/right arms are detected as separate SAM3
+    instances but should be treated as a single actor."""
+    if len(masks) <= 1:
+        return masks, colors
+    combined = np.logical_or.reduce(masks)
+    print(f"  egocentric: unioned {len(masks)} masks into 1 (color={colors[0]})")
+    return [combined], [colors[0]]
+
+
+def process_one(subdir, video_name, test_mode, matchnearest, egocentric,
+                predictor, image_predictor, text):
     from TrackSam3.track import get_mask_from_image, get_mask_from_video
 
     mp4_path = os.path.join(subdir, video_name)
@@ -116,8 +84,9 @@ def process_one(subdir, video_name, test_mode, onetomany, predictor, image_predi
         raise RuntimeError(f"Could not read first frame from {mp4_path}")
     first_frame_rgb = first_frame_bgr[:, :, ::-1]
 
-    # 2) Driving → full-video masks. onetomany allows 2 tracks; we pick one later via IoU.
-    max_drv = 2 if onetomany else 1
+    # 2) Driving → full-video masks. matchnearest allows 2 tracks then picks via IoU;
+    #    egocentric allows 2 tracks then unions them.
+    max_drv = 2 if (matchnearest or egocentric) else 1
     print(f"Getting driving masks from {mp4_path} (max_targets={max_drv}, text={text})...")
     drv_masks, drv_colors = get_mask_from_video(
         mp4_path, predictor, max_targets=max_drv, sort_by='x', fixed_colors=None, text=text,
@@ -125,6 +94,9 @@ def process_one(subdir, video_name, test_mode, onetomany, predictor, image_predi
     if len(drv_masks) == 0:
         raise RuntimeError(f"No valid persons detected in driving {mp4_path}")
     print(f"Driving detected: {len(drv_masks)} person(s); colors={drv_colors}")
+
+    if egocentric:
+        drv_masks, drv_colors = _union_masks(drv_masks, drv_colors)
 
     # 3) Resolve ref_image_path: test_mode auto-generates from first driving frame
     if test_mode:
@@ -135,19 +107,24 @@ def process_one(subdir, video_name, test_mode, onetomany, predictor, image_predi
         ref_image_path = find_ref_image(subdir)
 
     # 4) Get ref masks from ref_image (same path for both modes)
-    print(f"Getting ref masks from {ref_image_path}...")
+    max_ref = 2 if egocentric else 1
+    print(f"Getting ref masks from {ref_image_path} (max_targets={max_ref})...")
     ref_masks, ref_colors = get_mask_from_image(
-        ref_image_path, image_predictor, max_targets=1, sort_by='x', fixed_colors=None, text=text,
+        ref_image_path, image_predictor, max_targets=max_ref,
+        sort_by='x', fixed_colors=None, text=text,
     )
     if len(ref_masks) == 0:
         raise RuntimeError(f"No qualifying person found in ref image {ref_image_path}")
+
+    if egocentric:
+        ref_masks, ref_colors = _union_masks(ref_masks, ref_colors)
 
     # ref_mask.png: solid-color mask on black bg
     save_colored_mask_image(ref_masks, ref_colors, ref_mask_path, bg_color=(0, 0, 0))
     print(f"  Ref mask saved: {ref_mask_path}")
 
-    # 4.5) onetomany: pick the driving track closest to ref by IoU
-    if onetomany:
+    # 4.5) matchnearest: pick the driving track closest to ref by IoU
+    if matchnearest:
         drv_masks, drv_colors = _select_closest_to_ref(drv_masks, drv_colors, ref_masks)
 
     # 4) rendered_v2.mp4 is always a copy of driving
@@ -184,10 +161,17 @@ if __name__ == '__main__':
     parser.add_argument('--test_mode', action='store_true',
                         help='Use driving first frame as ref: saves ref_image.png with real '
                              'pixels inside mask area (black outside). No ref_image file needed.')
-    parser.add_argument('--onetomany', action='store_true',
+    parser.add_argument('--matchnearest', action='store_true',
                         help='Driving may contain 2 persons; ref has 1. Picks the driving '
                              'track whose first-frame mask has highest IoU with the ref mask '
                              '(after resizing ref to driving resolution). Other tracks are dropped.')
+    parser.add_argument('--egocentric', action='store_true',
+                        help='ONLY for egocentric/first-person data where the actor appears as '
+                             'multiple disconnected parts (e.g. left + right arms or grippers). '
+                             'Sets max_targets=2 for both driving and ref, then unions the '
+                             'resulting masks into one (same color), treating both arms as a '
+                             'single actor. Do NOT use on normal third-person data. '
+                             'Mutually exclusive with --matchnearest.')
     parser.add_argument('--text', type=str, nargs='+',
                         default=['human', 'character'],
                         help='Text prompts passed to SAM3 for both driving and ref. Add extras '
@@ -198,6 +182,11 @@ if __name__ == '__main__':
                         default='pretrained_weights/sam3.pt',
                         help='Path to SAM3 model weights.')
     args = parser.parse_args()
+
+    if args.matchnearest and args.egocentric:
+        parser.error("--matchnearest and --egocentric are mutually exclusive: "
+                     "the first picks one track out of many, the second unions multiple "
+                     "tracks into one.")
 
     from ultralytics.models.sam import SAM3SemanticPredictor, SAM3VideoSemanticPredictor
 
@@ -230,12 +219,12 @@ if __name__ == '__main__':
             continue
 
         print(f"\n{'='*60}")
-        print(f"[{i+1}/{len(subdirs)}] {subdir}  (video_name={args.video_name}, test_mode={args.test_mode}, onetomany={args.onetomany})")
+        print(f"[{i+1}/{len(subdirs)}] {subdir}  (video_name={args.video_name}, test_mode={args.test_mode}, matchnearest={args.matchnearest}, egocentric={args.egocentric})")
         print(f"{'='*60}")
         t0 = time.time()
         try:
-            process_one(subdir, args.video_name, args.test_mode, args.onetomany,
-                        predictor, image_predictor, args.text)
+            process_one(subdir, args.video_name, args.test_mode, args.matchnearest,
+                        args.egocentric, predictor, image_predictor, args.text)
             n_ok += 1
             print(f"  -> ok ({time.time() - t0:.1f}s)")
         except Exception as e:

@@ -1,4 +1,4 @@
- <h1>Official Pose Extraction & Rendering Code for SCAIL and SCAIL-2</h1>
+ <h1>Official Code for Processing Driving Videos for SCAIL</h1>
   <div align="center">
   <a href='https://arxiv.org/abs/2512.05905'><img src='https://img.shields.io/badge/📖 arXiv-2512.05905-red'></a>
   <a href='https://teal024.github.io/SCAIL/'><img src='https://img.shields.io/badge/🌐 Project Page-green'></a>
@@ -8,7 +8,7 @@
 </div>
 
 
-This repository contains the 3D pose extraction & rendering code for **SCAIL** Series, a framework towards Studio-Grade Character Animation via In-Context Learning), enabling complex animation under diverse and challenging
+This repository contains the code to process driving videos for **SCAIL**, a framework towards Studio-Grade Character Animation via In-Context Learning. The framework enables complex animation under diverse and challenging
 conditions, including large motion variations and multi-character interactions. The main repo is at [zai-org/SCAIL](https://github.com/zai-org/SCAIL).
 <p align="center">
   <img src="resources/pose_teaser.png" alt="teaser" width="90%">
@@ -16,43 +16,20 @@ conditions, including large motion variations and multi-character interactions. 
 
 
 ## 📋 Methods
-For SCAIL-Preview, a pose-driven animation framework. We develop the representation to be fully identity agnostic and depth-aware. We connect estimated 3D human keypoints according to skeletal topology and represent bones as spatial cylinders. The resulting 3D skeleton is rasterized into the frame space to obtain motion guidance signals.
-
-To process multi-character data, we introduce a **segment-and-extract pipeline**, we first segment each character, then extract their poses, and finally render them together to achieve multi-character pose extraction. This yield more robust results than commonly used end-to-end multi-human motion recovery methods, benefiting from [NLFPose](https://github.com/isarandi/nlf)’s reliable depth estimation.
-
-<p align="center">
-  <img src="resources/data.png" alt="data" width="90%">
-</p>
+**SCAIL** is a series of frameworks towards Studio-Grade Character Animation via In-Context Learning. The first open-sourced work of this series is SCAIL-Preview, a pose-driven animation framework. We develop a 3D skeleton for the pose representation to be fully identity agnostic and depth-aware. In SCAIL-Preview, we also introduce a segment-and-extract pipeline to process multi-human interactions, yielding robust results from [NLFPose](https://github.com/isarandi/nlf)’s reliable depth estimation.
 
 <p align="center">
   <img src='resources/pose_result.png' alt='Teaser' width='95%'>
 </p>
 
-For SCAIL-2, we introduce end-to-end driving, which is designed to bypass the pose estimation to obtain more reliable and expressive motion. To unify character animation and character replacement, as well as binding motion to character under multi-interaction scenarios, we introduce In-Context Unified Mask mechanism, serving as explicit signals to tell the model which motion to learn, which character should get the transfered motion and finally, whether the original environment should work as a reference. We adopt [SAM3](https://github.com/facebookresearch/sam3) to extract the explicit mask for both the reference image and the driving sequence.
-
-## 🗞️ Update and News
-* 2026.5.7: We update the inference code to support SCAIL-2. SCAIL-1 inference code are now marked as `v1`.
-* 2025.12.16: The pose extraction & rendering has also been partly adapted to ComfyUI in [ComfyUI-SCAIL-Pose](https://github.com/kijai/ComfyUI-SCAIL-Pose)!
-
-
-
-
-
-
-## 📋 TODOs
-
-- [x] **Inference Code for 3D Pose Extraction & Rendering**
-
-- [x] **Inference Code for 3D Pose Retarget**
-
-- [x] **Inference Code for Multi-Human Pose Extraction & Rendering**
+The latest SCAIL-2 is an end-to-end framework to bypass the pose estimation to obtain more reliable and expressive motion. We adopt [SAM3](https://github.com/facebookresearch/sam3) to extract the explicit mask for both the reference image and the driving sequence to augment the conditioning. SCAIL-2 supports both Animation Mode and Replacement Mode. In Animation mode, you can directly use the full driving video to drive the reference image, or using bounding boxes or masks to crop a certain character, or use pose-driven just like SCAIL-Preview. We will elaborate different ways of driving in lateral usage instructions.
 
 
 ## 🚀 Getting Started
 
 Make sure you have already clone the main repo, this repo should be cloned under the main repo folder:
 ```
-SCAIL/
+SCAIL/ (or SCAIL-2/)
 ├── examples
 ├── sat
 ├── configs
@@ -119,7 +96,7 @@ pretrained_weights/
 
 ## 🦾 Usage
 
-Default Extraction & Rendering for SCAIL-Preview:
+### SCAIL-Preview
 
 ```
 # Single Character w/o 3D Retarget
@@ -132,7 +109,45 @@ python NLFPoseExtract/v1_process_pose.py --subdir <path_to_the_example_pair> --u
 python NLFPoseExtract/v1_process_pose_multi.py --subdir <path_to_the_example_pair> --resolution [512, 896]
 ```
 
-Note that the examples are in the main repo folder, you can also use your own images or videos. After the extraction and rendering, the results will be saved in the example folder and you can continue to use that folder to generate character animations in the main repo.
+### SCAIL-2
+For SCAIL-2, two entrypoints cover the two tasks: **Animation** (`process_animation_aio.py`) and **Replacement** (`process_replacement.py`).
+
+#### Animation Mode
+
+```bash
+# (Recommended) End-to-end: rendered_v2.mp4 = driving copy, mask video is colored SAM3 masks.
+# More accurate and easier than pose-driven for most cases.
+python NLFPoseExtract/process_animation_aio.py --subdir <example_dir> --e2e_mode
+
+# Pose-driven (no --e2e_mode): runs NLF + DWpose, rendered_v2.mp4 is the skeleton render.
+# More interpretable / controllable; use it for extremely challenging inputs.
+python NLFPoseExtract/process_animation_aio.py --subdir <example_dir>
+
+## Following options allow behaviours between pose-driven and full-e2e. Useful for 704p horizontal / multi-human inputs where the zero-shot resolution gap causes artifacts
+
+# E2E + per-frame mask silhouette crop. 
+python NLFPoseExtract/process_animation_aio.py --subdir <example_dir> --e2e_mode --crop_e2e_mask
+
+# E2E + per-frame bbox crop.
+python NLFPoseExtract/process_animation_aio.py --subdir <example_dir> --e2e_mode --crop_e2e_bbox
+
+
+```
+
+Other useful flags: `--max_persons N` (default 2), `--text human character ...` (extra SAM3 prompts, e.g. add `"robot arm" "gripper"` for egocentric/robotic subjects).
+
+#### Replacement Mode
+
+```bash
+# Standard: ref image in the subdir, driving has 1 actor matching the ref.
+python NLFPoseExtract/process_replacement.py --subdir <example_dir>
+
+# Driving has 2 persons but you only want to replace 1: pick the driving track whose first-frame mask has
+# highest IoU with the ref mask; drop the other.
+python NLFPoseExtract/process_replacement.py --subdir <example_dir> --matchnearest
+```
+
+Examples are in the main repo folder; you can also use your own images or videos. After extraction the results live in the example folder and can be fed straight into the main repo to generate character animations.
 
 ## 📄 Citation
 

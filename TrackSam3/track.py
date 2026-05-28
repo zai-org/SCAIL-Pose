@@ -6,8 +6,10 @@ import numpy as np
 from decord import VideoReader
 
 
-# Minimum mask ratio threshold (percentage of frame)
-MIN_MASK_RATIO = 1.0
+# Minimum mask ratio threshold (percentage of frame). Override via env var
+# SCAIL_MIN_MASK_RATIO for small-subject scenes (e.g. paper figures where the
+# subject occupies <1% of the frame) without editing this file.
+MIN_MASK_RATIO = float(os.environ.get('SCAIL_MIN_MASK_RATIO', '1.0'))
 
 # Default cap on number of targets when caller does not override
 DEFAULT_MAX_TARGETS = 4
@@ -253,10 +255,9 @@ def get_mask_from_image_via_video(image_path, video_predictor, max_targets=DEFAU
     of the synthetic clip is kept.
     """
     import tempfile
+    from NLFPoseExtract.v2_helper import imread_bgr
     image_path = str(image_path)
-    img = cv2.imread(image_path)
-    if img is None:
-        raise FileNotFoundError(f"Cannot read image: {image_path}")
+    img = imread_bgr(image_path)
     H, W = img.shape[:2]
 
     tmp_fd, tmp_path = tempfile.mkstemp(suffix='.mp4')
