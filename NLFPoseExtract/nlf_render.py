@@ -3,15 +3,20 @@ import numpy as np
 import math
 from PIL import Image
 from render_3d.taichi_cylinder import render_whole
-from NLFPoseExtract.nlf_draw import intrinsic_matrix_from_field_of_view, process_data_to_COCO_format, preview_nlf_2d
+from NLFPoseExtract.nlf_draw import intrinsic_matrix_from_field_of_view, process_data_to_COCO_format, preview_nlf_2d, p3d_to_p2d
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pose_draw.draw_pose_utils import draw_pose_to_canvas_np, scale_image_hw_keep_size
+import pose_draw.draw_utils as draw_utils
 import torch.multiprocessing as mp
 import os
 os.environ['PYOPENGL_PLATFORM'] = 'osmesa'
 import copy
 import random
 import torch
+try:
+    import moviepy.editor as mpy
+except Exception:
+    import moviepy as mpy
 
 def p3d_single_p2d(points, intrinsic_matrix):
     X, Y, Z = points[0], points[1], points[2]
@@ -65,6 +70,70 @@ def get_single_pose_cylinder_specs(args):
                 cylinder_specs.append((joints3d[start], joints3d[end], colors[line_idx]))
     return cylinder_specs
 
+def get_single_pose_cylinder_specs_mono(args):
+    """渲染单个pose的辅助函数，用于并行处理"""
+    idx, pose, ori_pose, binary_frame, intrinsic_matrix, height, width, limb_seq, draw_seq = args
+    cylinder_specs = []
+    
+    for joints3d, ori_joint3d in zip(pose, ori_pose):  # 多人
+        joints3d = joints3d.cpu().numpy()
+        joints3d = process_data_to_COCO_format(joints3d)
+        ori_joint3d = ori_joint3d.cpu().numpy()
+        ori_joint3d = process_data_to_COCO_format(ori_joint3d)
+        specific_color = locate_binary_color(binary_frame, ori_joint3d, height, width)     # 通过3D点的2D投影的像素位置，计算原本这个人对应的颜色
+        for line_idx in draw_seq:
+            line = limb_seq[line_idx]
+            start, end = line[0], line[1]
+            if np.sum(joints3d[start]) == 0 or np.sum(joints3d[end]) == 0:
+                continue
+            else:
+                cylinder_specs.append((joints3d[start], joints3d[end], specific_color))
+    return cylinder_specs
+
+def get_single_pose_cylinder_specs_colored(args):
+    """直接使用传入的每人颜色渲染，不做颜色查找。"""
+    idx, pose, person_colors, limb_seq, draw_seq = args
+    cylinder_specs = []
+    for person_idx, joints3d in enumerate(pose):
+        joints3d = joints3d.cpu().numpy()
+        joints3d = process_data_to_COCO_format(joints3d)
+        color = person_colors[person_idx] if person_idx < len(person_colors) else [0, 0, 0, 1]
+        for line_idx in draw_seq:
+            line = limb_seq[line_idx]
+            start, end = line[0], line[1]
+            if np.sum(joints3d[start]) == 0 or np.sum(joints3d[end]) == 0:
+                continue
+            cylinder_specs.append((joints3d[start], joints3d[end], color))
+    return cylinder_specs
+
+
+def locate_binary_color(binary_frame, ori_joint3d, height, width):
+    """通过3D点的2D投影的像素位置，计算原本这个人对应的颜色。
+    ori_joint3d: COCO format (18, 3) numpy array
+    binary_frame: H x W x 3，BGR，像素颜色只有6种纯色之一
+    """
+    key_joint_indices = [1, 2, 5, 8, 11]  # neck, left shoulder, right shoulder, left pelvis, right pelvis
+    key_joints_3d = ori_joint3d[key_joint_indices]          # (5, 3)
+    valid_flag = key_joints_3d[:, 2] > 0.0001
+
+    point_2d = p3d_to_p2d(key_joints_3d[np.newaxis], height, width)[0]  # (5, 3)
+
+    sampled = []
+    for is_valid, p2d in zip(valid_flag, point_2d):
+        if not is_valid:
+            continue
+        u = int(round(p2d[0]))
+        v = int(round(p2d[1]))
+        if 0 <= u < width and 0 <= v < height:
+            sampled.append(binary_frame[v, u].astype(np.float32))
+
+    if len(sampled) == 0:
+        return [0, 0, 0, 1]
+
+    avg_color = np.mean(sampled, axis=0)
+    binarized = (avg_color > 127).astype(np.float32) * 1.0
+
+    return [binarized[0], binarized[1], binarized[2], 1]
 
 def collect_smpl_poses(data):
     uncollected_smpl_poses = [item['nlfpose'] for item in data]
@@ -103,7 +172,7 @@ def collect_smpl_poses_samurai(data):
 
 
 
-def render_nlf_as_images(data, poses, reshape_pool=None, intrinsic_matrix=None, draw_2d=True, aug_2d=False, aug_cam=False):
+def render_nlf_as_images(data, poses, reshape_pool=None, intrinsic_matrix=None, draw_2d=True, aug_2d=False, aug_cam=False, binary_mask=None, person_colors=None, palette_offset=0):
     """ return a list of images """
     height, width = data[0]['video_height'], data[0]['video_width']
     video_length = len(data)
@@ -186,23 +255,26 @@ def render_nlf_as_images(data, poses, reshape_pool=None, intrinsic_matrix=None, 
     
 
 
-    
-    if poses is not None:
+    # smpl_poses 会在这里被修改
+    if poses is not None or binary_mask is not None or person_colors is not None:
         # 重新收集poses
         smpl_poses = collect_smpl_poses(data)
-        aligned_poses = copy.deepcopy(poses)
-        if reshape_pool is not None:
-            for i in range(video_length):
-                persons_joints_list = smpl_poses[i]
-                poses_list = aligned_poses[i]
-                # 对里面每一个人，取关节并进行变形；并且修改2d；如果3d不存在，把2d的手/脸也去掉
-                for person_idx, person_joints in enumerate(persons_joints_list):
-                    candidate = poses_list['bodies']['candidate'][person_idx]
-                    subset = poses_list['bodies']['subset'][person_idx]
-                    face = poses_list["faces"][person_idx]
-                    right_hand = poses_list["hands"][2 * person_idx]
-                    left_hand = poses_list["hands"][2 * person_idx + 1]
-                    reshape_pool.apply_random_reshapes(person_joints, candidate, left_hand, right_hand, face, subset)
+        if binary_mask is not None:
+            original_smpl_poses = copy.deepcopy(smpl_poses)
+        if poses is not None:
+            aligned_poses = copy.deepcopy(poses)    # 2d poses
+            if reshape_pool is not None:
+                for i in range(video_length):
+                    persons_joints_list = smpl_poses[i]
+                    poses_list = aligned_poses[i]
+                    # 对里面每一个人，取关节并进行变形；并且修改2d；如果3d不存在，把2d的手/脸也去掉
+                    for person_idx, person_joints in enumerate(persons_joints_list):
+                        candidate = poses_list['bodies']['candidate'][person_idx]
+                        subset = poses_list['bodies']['subset'][person_idx]
+                        face = poses_list["faces"][person_idx]
+                        right_hand = poses_list["hands"][2 * person_idx]
+                        left_hand = poses_list["hands"][2 * person_idx + 1]
+                        reshape_pool.apply_random_reshapes(person_joints, candidate, left_hand, right_hand, face, subset)
     else:
         smpl_poses = [item['nlfpose'] for item in data]      # 主要为了兼容多人评测集；搭配process_video_nlf_original
 
@@ -221,147 +293,113 @@ def render_nlf_as_images(data, poses, reshape_pool=None, intrinsic_matrix=None, 
         new_intrinsic_matrix[1,2] = princpt[1]
         shift_dwpose_according_to_nlf(smpl_poses, aligned_poses, intrinsic_matrix, new_intrinsic_matrix, height, width)
                 
+    # person_colors 传入时，为每人生成独立肢体颜色方案（同 render_multi_nlf_as_images 的两套配色）
+    if person_colors is not None:
+        _palettes_255 = [
+            # Person 0: 浅色调
+            [[255,150,150],[180,230,240],[255,180,140],[255,215,150],[160,200,255],[100,120,255],
+             [200,255,100],[100,255,100],[140,255,180],[120,140,255],[180, 90,255],[190,120,255],
+             [210,210,210],[255,120,200],[130, 80,255],[255,120,200],[130, 80,255]],
+            # Person 1: 饱和色调
+            [[255, 20, 20],[  0,230,255],[255, 60,  0],[255,110,  0],[  0,130,255],[  0, 70,255],
+             [160,255, 40],[  0,255, 50],[  0,255,100],[  0,  0,255],[ 80,  0,255],[160,  0,255],
+             [130,130,130],[255,  0,150],[ 60,  0,255],[255,  0,150],[ 60,  0,255]],
+        ]
+        colors_per_person = [
+            [[c / 300 + 0.15 for c in rgb] + [0.8]
+             for rgb in _palettes_255[(p + palette_offset) % len(_palettes_255)]]
+            for p in range(len(person_colors))
+        ]
+
     # 串行获取每一帧的cylinder_specs
     cylinder_specs_list = []
+    cylinder_specs_list_mono = []
     for i in range(video_length):
-        cylinder_specs = get_single_pose_cylinder_specs((i, smpl_poses[i], None, None, None, None, colors, limb_seq, draw_seq))
+        if person_colors is not None:
+            cylinder_specs = []
+            for p_idx, person_pose in enumerate(smpl_poses[i]):
+                p_limb_colors = colors_per_person[p_idx] if p_idx < len(colors_per_person) else colors
+                cylinder_specs.extend(get_single_pose_cylinder_specs(
+                    (i, [person_pose], None, None, None, None, p_limb_colors, limb_seq, draw_seq)))
+        else:
+            cylinder_specs = get_single_pose_cylinder_specs((i, smpl_poses[i], None, None, None, None, colors, limb_seq, draw_seq))
         cylinder_specs_list.append(cylinder_specs)
+        if person_colors is not None:
+            cylinder_specs_colored = get_single_pose_cylinder_specs_colored((i, smpl_poses[i], person_colors, limb_seq, draw_seq))
+            cylinder_specs_list_mono.append(cylinder_specs_colored)
+        elif binary_mask is not None:
+            cylinder_specs_mono = get_single_pose_cylinder_specs_mono((i, smpl_poses[i], original_smpl_poses[i], binary_mask[i], intrinsic_matrix, height, width, limb_seq, draw_seq))
+            cylinder_specs_list_mono.append(cylinder_specs_mono)
 
 
     frames_np_rgba = render_whole(cylinder_specs_list, H=height, W=width, fx=focal_x, fy=focal_y, cx=princpt[0], cy=princpt[1])
+    frames_np_rgba_mono = render_whole(cylinder_specs_list_mono, H=height, W=width, fx=focal_x, fy=focal_y, cx=princpt[0], cy=princpt[1], use_specular=False) if (binary_mask is not None or person_colors is not None) else None
+
+    bg_color = np.array([0, 0, 0], dtype=np.uint8)
+    for frame in frames_np_rgba:
+        bg_mask = frame[:, :, 3] == 0
+        frame[:, :, :3][bg_mask] = bg_color
+
+    scale_h = random.uniform(0.85, 1.15)
+    scale_w = random.uniform(0.85, 1.15)
+    rescale_flag = random.random() < 0.4 if reshape_pool is not None else False
+
     if poses is not None and draw_2d:
         canvas_2d = draw_pose_to_canvas_np(aligned_poses, pool=None, H=height, W=width, reshape_scale=0, show_feet_flag=False, show_body_flag=False, show_cheek_flag=True, dw_hand=True)
-        # 覆盖 + rescale
-        scale_h = random.uniform(0.85, 1.15)
-        scale_w = random.uniform(0.85, 1.15)
-        rescale_flag = random.random() < 0.4 if reshape_pool is not None else False
         for i in range(len(frames_np_rgba)):
             frame_img = frames_np_rgba[i]
             canvas_img = canvas_2d[i]
             mask = canvas_img != 0
             frame_img[:, :, :3][mask] = canvas_img[mask]
-            frames_np_rgba[i] = frame_img
+            frames_np_rgba[i] = frame_img       # no alpha blending
+            # 在 mono 版上用每人的颜色画 cheek/hand/face 2D 关键点
+            if frames_np_rgba_mono is not None and person_colors is not None:
+                poses_list = aligned_poses[i]
+                for p_idx in range(len(poses_list['bodies']['candidate'])):
+                    temp_canvas = np.zeros((height, width, 3), dtype=np.uint8)
+                    p_candidate = poses_list['bodies']['candidate'][p_idx]
+                    p_subset = poses_list['bodies']['subset'][p_idx:p_idx+1]
+                    p_faces = poses_list['faces'][p_idx:p_idx+1]
+                    p_hands = poses_list['hands'][2*p_idx:2*p_idx+2]
+                    temp_canvas = draw_utils.draw_bodypose_augmentation(temp_canvas, p_candidate, p_subset, drop_aug=False, shift_aug=False, all_cheek_aug=True)
+                    temp_canvas = draw_utils.draw_handpose(temp_canvas, p_hands)
+                    temp_canvas = draw_utils.draw_facepose(temp_canvas, p_faces, optimized_face=True)
+                    mask_2d = np.any(temp_canvas != 0, axis=-1)
+                    mono_color = [int(c * 255) for c in person_colors[p_idx][:3]]
+                    frames_np_rgba_mono[i][:, :, :3][mask_2d] = mono_color
             if aug_2d:
                 if rescale_flag:
-                    frames_np_rgba[i]  = scale_image_hw_keep_size(frames_np_rgba[i], scale_h, scale_w)
-                if reshape_pool is not None:
-                    # 4%的概率完全消除某些帧
-                    if random.random() < 0.04:
-                        frames_np_rgba[i][:, :, 0:3] = 0
+                    frames_np_rgba[i] = scale_image_hw_keep_size(frames_np_rgba[i], scale_h, scale_w)
+                    border_mask = frames_np_rgba[i][:, :, 3] == 0
+                    frames_np_rgba[i][:, :, :3][border_mask] = bg_color
+                if reshape_pool is not None and random.random() < 0.04:
+                    # 4%的概率完全消除某些帧，两组同步
+                    frames_np_rgba[i][:, :, :3] = bg_color
+                    if frames_np_rgba_mono is not None:
+                        frames_np_rgba_mono[i][:, :, 0:3] = 0
+                if frames_np_rgba_mono is not None and rescale_flag:
+                    frames_np_rgba_mono[i] = scale_image_hw_keep_size(frames_np_rgba_mono[i], scale_h, scale_w)
     else:
-        scale_h = random.uniform(0.85, 1.15)
-        scale_w = random.uniform(0.85, 1.15)
-        rescale_flag = random.random() < 0.4 if reshape_pool is not None else False
         for i in range(len(frames_np_rgba)):
             if aug_2d:
                 if rescale_flag:
-                    frames_np_rgba[i]  = scale_image_hw_keep_size(frames_np_rgba[i], scale_h, scale_w)
-                if reshape_pool is not None:
-                    # 4%的概率完全消除某些帧
-                    if random.random() < 0.04:
-                        frames_np_rgba[i][:, :, 0:3] = 0
+                    frames_np_rgba[i] = scale_image_hw_keep_size(frames_np_rgba[i], scale_h, scale_w)
+                    border_mask = frames_np_rgba[i][:, :, 3] == 0
+                    frames_np_rgba[i][:, :, :3][border_mask] = bg_color
+                if reshape_pool is not None and random.random() < 0.04:
+                    # 4%的概率完全消除某些帧，两组同步
+                    frames_np_rgba[i][:, :, :3] = bg_color
+                    if frames_np_rgba_mono is not None:
+                        frames_np_rgba_mono[i][:, :, 0:3] = 0
+                if frames_np_rgba_mono is not None and rescale_flag:
+                    frames_np_rgba_mono[i] = scale_image_hw_keep_size(frames_np_rgba_mono[i], scale_h, scale_w)
 
+    if binary_mask is not None or person_colors is not None:
+        return frames_np_rgba, frames_np_rgba_mono
     return frames_np_rgba
 
 
 
-
-
-
-def render_phmr_as_images(data, height, width):
-    """ return a list of images """
-
-    base_colors_255_dict = {
-        # Warm Colors for Right Side (R.) - Red, Orange, Yellow
-        "Red": [255, 0, 0],
-        "Orange": [255, 85, 0],
-        "Golden Orange": [255, 170, 0],
-        "Yellow": [255, 240, 0],
-        "Yellow-Green": [180, 255, 0],
-        # Cool Colors for Left Side (L.) - Green, Blue, Purple
-        "Bright Green": [0, 255, 0],
-        "Light Green-Blue": [0, 255, 85],
-        "Aqua": [0, 255, 170],
-        "Cyan": [0, 255, 255],
-        "Sky Blue": [0, 170, 255],
-        "Medium Blue": [0, 85, 255],
-        "Pure Blue": [0, 0, 255],
-        "Purple-Blue": [85, 0, 255],
-        "Medium Purple": [170, 0, 255],
-        # Neutral/Central Colors (e.g., for Neck, Nose, Eyes, Ears)
-        "Grey": [150, 150, 150],
-        "Pink-Magenta": [255, 0, 170],
-        "Dark Pink": [255, 0, 85],
-        "Violet": [100, 0, 255],
-        "Dark Violet": [50, 0, 255],
-    }
-
-    ordered_colors_255 = [
-        base_colors_255_dict["Red"],              # Neck -> R. Shoulder (Red)
-        base_colors_255_dict["Cyan"],             # Neck -> L. Shoulder (Cyan)
-        base_colors_255_dict["Orange"],           # R. Shoulder -> R. Elbow (Orange)
-        base_colors_255_dict["Golden Orange"],    # R. Elbow -> R. Wrist (Golden Orange)
-        base_colors_255_dict["Sky Blue"],         # L. Shoulder -> L. Elbow (Sky Blue)
-        base_colors_255_dict["Medium Blue"],      # L. Elbow -> L. Wrist (Medium Blue)
-        base_colors_255_dict["Yellow-Green"],       # Neck -> R. Hip ( Yellow-Green)
-        base_colors_255_dict["Bright Green"],     # R. Hip -> R. Knee (Bright Green - transitioning warm to cool spectrum)
-        base_colors_255_dict["Light Green-Blue"], # R. Knee -> R. Ankle (Light Green-Blue - transitioning)
-        base_colors_255_dict["Pure Blue"],        # Neck -> L. Hip (Pure Blue)
-        base_colors_255_dict["Purple-Blue"],      # L. Hip -> L. Knee (Purple-Blue)
-        base_colors_255_dict["Medium Purple"],    # L. Knee -> L. Ankle (Medium Purple)
-        base_colors_255_dict["Grey"],             # Neck -> Nose (Grey)
-        base_colors_255_dict["Pink-Magenta"],     # Nose -> R. Eye (Pink/Magenta)
-        base_colors_255_dict["Dark Violet"],        # R. Eye -> R. Ear (Dark Pink)
-        base_colors_255_dict["Pink-Magenta"],           # Nose -> L. Eye (Violet)
-        base_colors_255_dict["Dark Violet"],      # L. Eye -> L. Ear (Dark Violet)
-    ]
-
-    limb_seq = [
-        [1, 2],    # 0 Neck -> R. Shoulder
-        [1, 5],    # 1 Neck -> L. Shoulder
-        [2, 3],    # 2 R. Shoulder -> R. Elbow
-        [3, 4],    # 3 R. Elbow -> R. Wrist
-        [5, 6],    # 4 L. Shoulder -> L. Elbow
-        [6, 7],    # 5 L. Elbow -> L. Wrist
-        [1, 8],    # 6 Neck -> R. Hip
-        [8, 9],    # 7 R. Hip -> R. Knee
-        [9, 10],   # 8 R. Knee -> R. Ankle
-        [1, 11],   # 9 Neck -> L. Hip
-        [11, 12],  # 10 L. Hip -> L. Knee
-        [12, 13],  # 11 L. Knee -> L. Ankle
-        [1, 0],    # 12 Neck -> Nose
-        [0, 14],   # 13 Nose -> R. Eye
-        [14, 16],  # 14 R. Eye -> R. Ear
-        [0, 15],   # 15 Nose -> L. Eye
-        [15, 17],  # 16 L. Eye -> L. Ear
-    ]
-
-    draw_seq = [0, 2, 3, # Neck -> R. Shoulder -> R. Elbow -> R. Wrist
-                1, 4, 5, # Neck -> L. Shoulder -> L. Elbow -> L. Wrist
-                6, 7, 8, # Neck -> R. Hip -> R. Knee -> R. Ankle
-                9, 10, 11, # Neck -> L. Hip -> L. Knee -> L. Ankle
-                12, # Neck -> Nose
-                13, 14, # Nose -> R. Eye -> R. Ear
-                15, 16, # Nose -> L. Eye -> L. Ear
-                ]   # 从近心端往外扩展
-
-    colors = [[c / 300 + 0.15 for c in color_rgb] + [0.8] for color_rgb in ordered_colors_255]
-    intrinsic_matrix = intrinsic_matrix_from_field_of_view((height, width))
-    focal = intrinsic_matrix[0,0]
-    princpt = (intrinsic_matrix[0,2], intrinsic_matrix[1,2])  # 主点 (cx, cy)
-    smpl_poses = [[torch.from_numpy(item_person).to(device=torch.device('cpu')) for item_person in item] for item in data]
-
-                
-    # 串行获取每一帧的cylinder_specs
-    cylinder_specs_list = []
-    for i in range(len(smpl_poses)):
-        cylinder_specs = get_single_pose_cylinder_specs((i, smpl_poses[i], focal, princpt, height, width, colors, limb_seq, draw_seq))
-        cylinder_specs_list.append(cylinder_specs)
-
-
-    frames_np_rgba = render_whole(cylinder_specs_list, H=height, W=width, fx=focal, fy=focal, cx=princpt[0], cy=princpt[1], radius=0.0215)
-
-    return frames_np_rgba
 
 
 
@@ -508,3 +546,67 @@ def render_multi_nlf_as_images(data, poses, reshape_pool=None, intrinsic_matrix=
             frames_np_rgba[i] = frame_img
 
     return frames_np_rgba
+
+
+def run_nlf_from_masks(video_frames, masks, colors, model_nlf, nlf_render_path,
+                       nlf_render_mask_path, fps=16, detector=None):
+    """对每个人用墨绿色背景隔离后提取 NLF 姿态，再分别渲染普通和 mono 结果并保存为 MP4。
+
+    Args:
+        video_frames: (T, H, W, 3) uint8 numpy array, RGB
+        masks:  list of (T, H, W) bool ndarray，每人一个
+        colors: list of BGR color tuples，与 masks 一一对应
+        model_nlf: TorchScript NLF 模型
+        nlf_render_path: 普通渲染输出路径（含 2D 关键点叠加）
+        nlf_render_mask_path: mono 渲染输出路径
+        fps: 输出帧率
+        detector: DWposeDetector，对原始帧提取多人 2D 关键点
+    """
+    from NLFPoseExtract.extract_nlfpose_batch import process_video_multi_nlf
+
+    if len(masks) == 0:
+        print("No masks provided, skipping.")
+        return
+
+    T, H, W, C = video_frames.shape
+    dark_green = np.array([0, 100, 0], dtype=np.uint8)
+
+    vr_frames_list = []
+    for mask in masks:
+        person_frames = np.full((T, H, W, C), dark_green, dtype=np.uint8)
+        person_frames[mask] = video_frames[mask]
+        vr_frames_list.append(torch.from_numpy(person_frames))
+
+    nlf_results = process_video_multi_nlf(model_nlf, vr_frames_list)
+
+    poses = None
+    if detector is not None:
+        detector_return_list = []
+        for t in range(T):
+            pil_frame = Image.fromarray(video_frames[t])
+            detector_result = detector(pil_frame)
+            detector_return_list.append(detector_result)
+        poses, _, _ = zip(*detector_return_list)
+        poses = list(poses)
+
+    person_colors_rgba = []
+    for rgb in colors:
+        r, g, b = rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0
+        person_colors_rgba.append([r, g, b, 1.0])
+
+    palette_offset = 1 if len(masks) == 1 else 0
+    frames_regular, frames_mono = render_nlf_as_images(
+        nlf_results, poses=poses, reshape_pool=None, intrinsic_matrix=None,
+        draw_2d=True, person_colors=person_colors_rgba, palette_offset=palette_offset,
+    )
+
+    for out_path in (nlf_render_path, nlf_render_mask_path):
+        out_dir = os.path.dirname(out_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+
+    frames_regular_rgb = [f[:, :, :3] for f in frames_regular]
+    frames_mono_rgb = [f[:, :, :3] for f in frames_mono]
+
+    mpy.ImageSequenceClip(frames_regular_rgb, fps=fps).write_videofile(nlf_render_path)
+    mpy.ImageSequenceClip(frames_mono_rgb, fps=fps).write_videofile(nlf_render_mask_path)
