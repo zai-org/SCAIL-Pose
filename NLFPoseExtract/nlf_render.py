@@ -627,8 +627,8 @@ def run_nlf_from_masks(video_frames, masks, colors, model_nlf, nlf_render_path,
             })
 
     person_colors_rgba = []
-    for rgb in colors:
-        r, g, b = rgb[0] / 255.0, rgb[1] / 255.0, rgb[2] / 255.0
+    for bgr in colors:
+        b, g, r = bgr[0] / 255.0, bgr[1] / 255.0, bgr[2] / 255.0
         person_colors_rgba.append([r, g, b, 1.0])
 
     palette_offset = 1 if len(masks) == 1 else 0
