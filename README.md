@@ -11,18 +11,31 @@
 This repository contains the code to process driving videos for **SCAIL**, a framework towards Studio-Grade Character Animation via In-Context Learning. The framework enables complex animation under diverse and challenging
 conditions, including large motion variations and multi-character interactions. The main repo is at [zai-org/SCAIL](https://github.com/zai-org/SCAIL).
 <p align="center">
-  <img src="resources/pose_teaser.png" alt="teaser" width="90%">
+  <img src="resources/pose_teaser.png" alt="teaser" width="90%"><br>
+  <b>SCAIL-1</b>
+</p>
+
+<p align="center">
+  <img src="resources/teaser.png" alt="teaser" width="90%"><br>
+  <b>SCAIL-2</b>
 </p>
 
 
 ## 📋 Methods
-**SCAIL** is a series of frameworks towards Studio-Grade Character Animation via In-Context Learning. The first open-sourced work of this series is SCAIL-Preview, a pose-driven animation framework. We develop a 3D skeleton for the pose representation to be fully identity agnostic and depth-aware. In SCAIL-Preview, we also introduce a segment-and-extract pipeline to process multi-human interactions, yielding robust results from [NLFPose](https://github.com/isarandi/nlf)’s reliable depth estimation.
+**SCAIL** is a series of frameworks towards Studio-Grade Character Animation via In-Context Learning. The first open-source work of this series is SCAIL-Preview, a pose-driven animation framework. We develop a 3D skeleton for the pose representation to be fully identity agnostic and depth-aware. The representation can process multi-human interactions, yielding robust results from [NLFPose](https://github.com/isarandi/nlf)’s reliable depth estimation.
 
 <p align="center">
   <img src='resources/pose_result.png' alt='Teaser' width='95%'>
 </p>
 
-The latest SCAIL-2 is an end-to-end framework to bypass the pose estimation to obtain more reliable and expressive motion. We adopt [SAM3](https://github.com/facebookresearch/sam3) to extract the explicit mask for both the reference image and the driving sequence to augment the conditioning. SCAIL-2 supports both Animation Mode and Replacement Mode. In Animation mode, you can directly use the full driving video to drive the reference image, or using bounding boxes or masks to crop a certain character, or use pose-driven just like SCAIL-Preview. We will elaborate different ways of driving in lateral usage instructions.
+Despite current progress, skeleton maps suffer from inherent ambiguity under complex scenarios. Further, the prior work explore universal character animation to drive any characters, but still rely on exocentric human skeletons and thus cannot handle driving sources like animals. Character replacement and multi-character animation suffers from similar issues, where state-of-the-art methods use inpainting masks, but such masks are still a form of intermediates and limits the application and performance upper bounds.
+
+<p align="center">
+  <img src='resources/preteaser.png' alt='Preteaser' width='70%'>
+</p>
+
+Our latest **SCAIL-2** is an end-to-end framework to bypass the pose estimation to obtain more reliable and expressive motion, utilizing the inherent in-context learning capability in the diffusion transformer. We adopt a unification design to support both Animation Mode and Replacement Mode, using
+ [SAM3](https://github.com/facebookresearch/sam3) to extract the explicit mask for both the reference image and the driving sequence to augment the conditioning. Benefiting from the end-to-end unification, SCAIL-2 supports diverse driving tasks. You can directly use the full driving video to drive the reference image, or use pose-driven just like SCAIL-Preview. We will elaborate different ways of driving in lateral usage instructions.
 
 
 ## 🚀 Getting Started
@@ -148,6 +161,16 @@ python NLFPoseExtract/process_replacement.py --subdir <example_dir> --matchneare
 ```
 
 Examples are in the main repo folder; you can also use your own images or videos. After extraction the results live in the example folder and can be fed straight into the main repo to generate character animations.
+
+#### Notes for Animation
+Although our model supports a variety of driving modalities, end-to-end driving typically achieves the best results, as the model has access to the complete visual information. This is especially evident in cases involving object interactions.
+
+<p align="center">
+  <img src='resources/animation.png' alt='Preteaser' width='70%'>
+</p>
+
+
+
 
 ## 📄 Citation
 
