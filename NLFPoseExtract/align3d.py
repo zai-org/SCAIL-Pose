@@ -68,7 +68,7 @@ def solve_new_camera_params_central(three_d_points, focal_length, imshape, new_2
     ])
 
 
-    return K_final, m
+    return K_final, m, s
 
 
 def solve_new_camera_params_down(three_d_points, focal_length, imshape, new_2d_points):
@@ -135,4 +135,4 @@ def solve_new_camera_params_down(three_d_points, focal_length, imshape, new_2d_p
     ])
 
 
-    return K_final, m
+    return K_final, m, s

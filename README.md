@@ -1,4 +1,4 @@
- <h1>Official Code for Processing Driving Videos for SCAIL</h1>
+ <h1>Official Code for Processing Driving Videos for SCAIL Series</h1>
   <div align="center">
   <a href='https://arxiv.org/abs/2512.05905'><img src='https://img.shields.io/badge/📖 arXiv-2512.05905-red'></a>
   <a href='https://teal024.github.io/SCAIL/'><img src='https://img.shields.io/badge/🌐 Project Page-green'></a>
@@ -8,11 +8,11 @@
 </div>
 
 
-This repository contains the code to process driving videos for **SCAIL**, a framework towards Studio-Grade Character Animation via In-Context Learning. The framework enables complex animation under diverse and challenging
+This repository contains the code to process driving videos for **SCAIL**, a series of frameworks towards Studio-Grade Character Animation via In-Context Learning. The frameworks enable complex animation under diverse and challenging
 conditions, including large motion variations and multi-character interactions. The main repo is at [zai-org/SCAIL](https://github.com/zai-org/SCAIL).
 <p align="center">
   <img src="resources/pose_teaser.png" alt="teaser" width="90%"><br>
-  <b>SCAIL-1</b>
+  <b>SCAIL</b>
 </p>
 
 <p align="center">
