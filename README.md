@@ -28,7 +28,7 @@ conditions, including large motion variations and multi-character interactions. 
   <img src='resources/pose_result.png' alt='Teaser' width='95%'>
 </p>
 
-Despite current progress, skeleton maps suffer from inherent ambiguity under complex scenarios. Further, the prior work explore universal character animation to drive any characters, but still rely on exocentric human skeletons and thus cannot handle driving sources like animals. Character replacement and multi-character animation suffers from similar issues, where state-of-the-art methods use inpainting masks, but such masks are still a form of intermediates and limits the application and performance upper bounds.
+Despite current progress, skeleton maps suffer from inherent ambiguity under complex scenarios. As intermediates, skeleton maps suffer from inherent ambiguity under complex scenarios. Further, it restricts the driving source to be exocentric human movements and thus cannot handle driving sources like animals. Character replacement and multi-character animation suffers from similar issues, where state-of-the-art methods use inpainting masks, but such masks are still a form of intermediates and limits the application and bounds the performance.
 
 <p align="center">
   <img src='resources/preteaser.png' alt='Preteaser' width='70%'>
@@ -96,11 +96,22 @@ wget -O DWPose/yolox_l.onnx \
 cd ..
 ```
 
+For **SCAIL-2**, you additionally need the SAM3 weights. SAM3 is gated on HuggingFace,
+so you must first request access at [facebook/sam3](https://huggingface.co/facebook/sam3)
+and agree to Meta's license. Once approved, download `sam3.pt` into `pretrained_weights/`:
+
+```bash
+# After being granted access on HuggingFace
+huggingface-cli login
+huggingface-cli download facebook/sam3 sam3.pt --local-dir pretrained_weights/
+```
+
 The weights should be formatted as follows:
 
 ```
 pretrained_weights/
 ├── nlf_l_multi_0.3.2.torchscript
+├── sam3.pt
 └── DWPose/
     ├── dw-ll_ucoco_384.onnx
     └── yolox_l.onnx
@@ -147,7 +158,7 @@ python NLFPoseExtract/process_animation_aio.py --subdir <example_dir> --e2e_mode
 
 ```
 
-Other useful flags: `--max_persons N` (default 2), `--text human character ...` (extra SAM3 prompts, e.g. add `"robot arm" "gripper"` for egocentric/robotic subjects).
+Other useful flags: `--max_persons N` (default 2), `--text human character ...` (extra SAM3 prompts, e.g. add `"robot arm" "gripper"` for egocentric/robotic subjects), `--sam3_model <path>` (override the default `pretrained_weights/sam3.pt` location). The same `--sam3_model` flag is also accepted by `process_replacement.py`.
 
 #### Replacement Mode
 
