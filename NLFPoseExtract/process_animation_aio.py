@@ -76,7 +76,7 @@ def process_one(subdir, video_name, e2e_mode, crop_kind, max_persons, text,
             )
         N = len(drv_masks)
         print(f"  Reduced driving to {N} person(s).")
-    save_colored_mask_image(ref_masks, ref_colors, ref_mask_path)
+    save_colored_mask_image(ref_masks, ref_colors, ref_mask_path, bg_color=(255, 255, 255))
     print(f"  Ref mask saved: {ref_mask_path}")
 
     # 3) Read driving frames and fps once
